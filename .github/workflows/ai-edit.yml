@@ -2,7 +2,7 @@ name: AI Auto Edit from Mobile
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened]
 
 permissions:
   contents: write
@@ -26,12 +26,12 @@ jobs:
         run: pip install groq
 
       - name: Rewrite app.py with AI
+        shell: python
         env:
           GROQ_API_KEY: \${{ secrets.GROQ_API_KEY }}
           ISSUE_TITLE: \${{ github.event.issue.title }}
           ISSUE_BODY: \${{ github.event.issue.body }}
         run: |
-          python - << 'EOF'
           import os, re
           from groq import Groq
 
@@ -52,20 +52,40 @@ jobs:
           {current_code}
           """
 
-          res = client.chat.completions.create(
-              model="openai/gpt-oss-120b",
-              messages=[{"role": "user", "content": prompt}],
-              temperature=0.2
-          )
+          # 利用可能なモデルを順番に試行
+          models = ["openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct", "qwen-qwq-32b", "gemma2-9b-it"]
+          res = None
+          last_err = None
+          for m_name in models:
+              try:
+                  res = client.chat.completions.create(
+                      model=m_name,
+                      messages=[{"role": "user", "content": prompt}],
+                      temperature=0.2
+                  )
+                  print(f"Used model: {m_name}")
+                  break
+              except Exception as e:
+                  last_err = e
+                  continue
+
+          if res is None:
+              # アカウントで利用可能なチャットモデルを自動取得して実行
+              avail = [m.id for m in client.models.list().data if "whisper" not in m.id and "guard" not in m.id and "tts" not in m.id]
+              res = client.chat.completions.create(
+                  model=avail[0],
+                  messages=[{"role": "user", "content": prompt}],
+                  temperature=0.2
+              )
 
           new_code = res.choices[0].message.content.strip()
+          new_code = re.sub(r"<think>.*?</think>", "", new_code, flags=re.DOTALL).strip()
           m = re.search(r"```(?:python)?\n(.*?)```", new_code, re.DOTALL)
           if m:
               new_code = m.group(1).strip()
 
           with open("app.py", "w", encoding="utf-8") as f:
               f.write(new_code + "\n")
-          EOF
 
       - name: Commit and Push to boxfish
         run: |
