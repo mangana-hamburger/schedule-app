@@ -1,0 +1,82 @@
+name: AI Auto Edit from Mobile
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  edit-code:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: boxfish
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install groq
+
+      - name: Rewrite app.py with AI
+        env:
+          GROQ_API_KEY: \${{ secrets.GROQ_API_KEY }}
+          ISSUE_TITLE: \${{ github.event.issue.title }}
+          ISSUE_BODY: \${{ github.event.issue.body }}
+        run: |
+          python - << 'EOF'
+          import os, re
+          from groq import Groq
+
+          with open("app.py", "r", encoding="utf-8") as f:
+              current_code = f.read()
+
+          instruction = f"{os.environ.get('ISSUE_TITLE', '')}\n{os.environ.get('ISSUE_BODY', '')}"
+          client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+          prompt = f"""あなたは熟練のPython/Streamlitエンジニアです。
+          以下のユーザーの指示に従って、現在の `app.py` のコードを修正してください。
+          【重要】出力は修正後の完全なPythonコードのみとし、解説や挨拶は一切含めないでください。
+
+          【ユーザーの指示】
+          {instruction}
+
+          【現在の app.py】
+          {current_code}
+          """
+
+          res = client.chat.completions.create(
+              model="openai/gpt-oss-120b",
+              messages=[{"role": "user", "content": prompt}],
+              temperature=0.2
+          )
+
+          new_code = res.choices[0].message.content.strip()
+          m = re.search(r"```(?:python)?\n(.*?)```", new_code, re.DOTALL)
+          if m:
+              new_code = m.group(1).strip()
+
+          with open("app.py", "w", encoding="utf-8") as f:
+              f.write(new_code + "\n")
+          EOF
+
+      - name: Commit and Push to boxfish
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          git diff --staged --quiet || (git commit -m "AI update from Issue #${{ github.event.issue.number }}" && git push origin boxfish)
+
+      - name: Close Issue with comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body "✅ AIによるコードの自動修正とデプロイが完了しました！Streamlitアプリをリロードして確認してください。"
+          gh issue close ${{ github.event.issue.number }}
